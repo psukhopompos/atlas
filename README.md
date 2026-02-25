@@ -15,7 +15,7 @@ Input (Twitter archive or JSONL)
   → Embed raw text (Gemini embedding-001, free)
   → Project to 2D (UMAP, local)
   → Cluster (HDBSCAN, auto-tuned, local)
-  → Portrait each region (Gemini Flash, free)
+  → Portrait each region (any LLM via litellm — default: Gemini Flash, free)
   → Output: atlas.json + atlas.md + atlas.html
 ```
 
@@ -27,7 +27,7 @@ Three outputs:
 ## Install
 
 ```bash
-pip install google-genai numpy hdbscan umap-learn plotly scipy python-dotenv
+pip install google-genai litellm numpy hdbscan umap-learn plotly scipy python-dotenv
 ```
 
 Get a free Gemini API key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey), then:
@@ -40,9 +40,15 @@ Or create a `.env` file:
 ```
 GOOGLE_API_KEY=your_key
 
-# Optional: override models
-ATLAS_PORTRAIT_MODEL=gemini-3-flash-preview   # default
-ATLAS_EMBED_MODEL=gemini-embedding-001         # default
+# Optional: override portrait model (any litellm-supported model)
+ATLAS_PORTRAIT_MODEL=gemini/gemini-3-flash-preview   # default
+# Examples:
+# ATLAS_PORTRAIT_MODEL=anthropic/claude-sonnet-4-20250514
+# ATLAS_PORTRAIT_MODEL=openai/gpt-4o
+# ATLAS_PORTRAIT_MODEL=ollama/llama3
+
+# Embedding model (Gemini only — canonical vector space for the format)
+ATLAS_EMBED_MODEL=gemini-embedding-001
 ```
 
 ## Usage

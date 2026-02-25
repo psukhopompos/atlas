@@ -49,7 +49,7 @@ from google import genai
 
 VERSION = "0.1.0"
 EMBED_MODEL = os.environ.get("ATLAS_EMBED_MODEL", "gemini-embedding-001")
-PORTRAIT_MODEL = os.environ.get("ATLAS_PORTRAIT_MODEL", "gemini-3-flash-preview")
+PORTRAIT_MODEL = os.environ.get("ATLAS_PORTRAIT_MODEL", "gemini/gemini-3-flash-preview")
 EMBED_BATCH_SIZE = 100
 EMBED_MAX_WORKERS = 5
 EMBED_DIM = 3072
@@ -442,7 +442,10 @@ def _analyze_cluster(traces, labels, cluster_id):
             "sources": source_pcts, "samples": sampled}
 
 
-def write_portraits(traces, labels, n_clusters, client):
+def write_portraits(traces, labels, n_clusters):
+    import litellm
+    litellm.suppress_debug_info = True
+
     portraits = []
     for cid in range(n_clusters):
         if _shutdown.is_set():
@@ -464,23 +467,34 @@ def write_portraits(traces, labels, n_clusters, client):
 
         for attempt in range(3):
             try:
-                response = client.models.generate_content(
+                response = litellm.completion(
                     model=PORTRAIT_MODEL,
-                    contents=user_prompt,
-                    config={
-                        "system_instruction": PORTRAIT_PROMPT,
-                        "response_mime_type": "application/json",
-                        "temperature": 0.7,
-                        "max_output_tokens": 2048,
-                    },
+                    messages=[
+                        {"role": "system", "content": PORTRAIT_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0.7,
+                    max_tokens=2048,
+                    response_format={"type": "json_object"},
                 )
-                raw = response.text.strip()
+                raw = response.choices[0].message.content.strip()
                 portrait_data = json.loads(raw)
                 break
+            except json.JSONDecodeError:
+                raw_clean = re.sub(r'^```json\s*', '', raw)
+                raw_clean = re.sub(r'\s*```$', '', raw_clean)
+                try:
+                    portrait_data = json.loads(raw_clean)
+                    break
+                except json.JSONDecodeError:
+                    if attempt < 2:
+                        time.sleep(3 * (attempt + 1))
+                    else:
+                        print(f"error: bad JSON")
             except Exception as e:
                 if attempt < 2:
                     err = str(e)
-                    if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                    if "429" in err or "rate" in err.lower():
                         time.sleep(15 * (attempt + 1))
                     else:
                         time.sleep(3 * (attempt + 1))
@@ -833,9 +847,8 @@ def main():
                 "sources": source_pcts,
             })
     else:
-        print(f"\n[4/5] Writing {n_clusters} portraits (gemini-2.5-flash)...")
-        client = genai.Client()
-        portraits = write_portraits(traces, labels, n_clusters, client)
+        print(f"\n[4/5] Writing {n_clusters} portraits ({PORTRAIT_MODEL})...")
+        portraits = write_portraits(traces, labels, n_clusters)
 
     # [5/5] Save
     print(f"\n[5/5] Saving outputs...")
