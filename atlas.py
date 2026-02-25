@@ -1008,6 +1008,7 @@ def main():
     parser.add_argument("--deep", action="store_true",
                         help="Annotate traces via LLM before embedding (higher fidelity)")
     parser.add_argument("--min-cluster-size", type=int, help="Override HDBSCAN")
+    parser.add_argument("--exclude-sources", help="Comma-separated sources to exclude (e.g. dm,group_dm)")
     parser.add_argument("--no-portraits", action="store_true", help="Skip portraits")
     parser.add_argument("--no-viz", action="store_true", help="Skip HTML map")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -1044,6 +1045,11 @@ def main():
     step += 1
     print(f"\n[{step}/{n_steps}] Loading traces...")
     traces, fmt = auto_load(args.traces)
+    if args.exclude_sources:
+        excluded = set(s.strip() for s in args.exclude_sources.split(","))
+        before = len(traces)
+        traces = [t for t in traces if t["source"] not in excluded]
+        print(f"  Excluded sources {excluded}: {before:,} → {len(traces):,}")
     src_counts = Counter(t["source"] for t in traces)
     print(f"  {fmt} format: {len(traces):,} traces")
     for src, cnt in src_counts.most_common():
