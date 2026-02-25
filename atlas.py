@@ -56,6 +56,8 @@ EMBED_DIM = 3072
 BORDER_RATIO = 0.85
 SAMPLES_PER_CLUSTER = 25
 EMBED_TRUNCATE = 2000
+ANNOTATE_MODEL = os.environ.get("ATLAS_ANNOTATE_MODEL", PORTRAIT_MODEL)
+ANNOTATE_MAX_WORKERS = int(os.environ.get("ATLAS_ANNOTATE_WORKERS", "10"))
 
 _shutdown = Event()
 
@@ -236,6 +238,210 @@ def auto_load(path):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# ANNOTATION (--deep mode)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ANNOTATE_PROMPT = """\
+You are a cognitive mineralogist. You receive a behavioral trace — something \
+a mind produced or consumed — and you decompose it into its constituent \
+cognitive elements, the way a spectrometer decomposes light into frequencies.
+
+You do not interpret. You do not judge. You dissolve and name what you find.
+
+Your output is a JSON object. Every field is free-form text — you name what \
+you see with the precision of someone who knows that vague names destroy \
+information. "philosophy" is vague. "epistemological anxiety about grounding \
+claims without infinite regress" is precise.
+
+The fields:
+
+{
+  "domains": [
+    // What territories of knowledge, experience, or culture are present?
+    // Name them with enough precision that two traces sharing a domain
+    // would be recognizably about the same thing.
+    // Typically 1-5 domains per trace.
+  ],
+
+  "tension": // What collides, contradicts, or creates friction here?
+             // If nothing collides, what pulls? What is the gravitational
+             // center of this trace? Name the tension, not the topic.
+             // null if the trace is purely utilitarian with no tension.
+
+  "register": // How does the language itself behave? Not what it says —
+              // how it moves. Density, rhythm, formality, orality,
+              // code-switching. Describe the linguistic texture as if
+              // you were describing a material: rough, compressed,
+              // liquid, brittle, layered.
+
+  "energy": // What state is the nervous system in? Not emotion (which
+            // is interpretation) but energy: velocity, temperature,
+            // pressure. A trace can be high-velocity and cold.
+            // Describe the energetic signature.
+
+  "compression": // How much is packed into how little space?
+                 // "maximum" = each word carries multiple loads.
+                 // "expansive" = the thought breathes and wanders.
+                 // "utilitarian" = no compression, pure function.
+                 // Name the compression pattern.
+
+  "switching": // Does the trace shift between languages, registers,
+               // or cognitive modes? If yes, name the switch points
+               // and what triggers each transition.
+               // null if the trace is uniform throughout.
+
+  "action": // What is the mind DOING here? Not thinking — doing.
+            // Building? Recognizing? Reacting? Processing? Seeking?
+            // Defending? Performing? Name the verb.
+}
+
+Respond with valid JSON only. No markdown. No commentary.\
+"""
+
+
+def _annotate_one(trace):
+    """Annotate a single trace via LLM. Returns extraction dict or None."""
+    import litellm
+
+    parts = [f"[source: {trace['source']}]"]
+    if trace.get("created_at"):
+        parts.append(f"[when: {trace['created_at']}]")
+    parts.append(f"\n{trace['text'][:4000]}")
+    user_msg = "\n".join(parts)
+
+    for attempt in range(5):
+        if _shutdown.is_set():
+            return None
+        try:
+            response = litellm.completion(
+                model=ANNOTATE_MODEL,
+                messages=[
+                    {"role": "system", "content": ANNOTATE_PROMPT},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=0.3,
+                max_tokens=1024,
+                response_format={"type": "json_object"},
+            )
+            raw = response.choices[0].message.content.strip()
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            raw_clean = re.sub(r'^```json\s*', '', raw)
+            raw_clean = re.sub(r'\s*```$', '', raw_clean)
+            try:
+                return json.loads(raw_clean)
+            except json.JSONDecodeError:
+                if attempt < 4:
+                    time.sleep(2 * (attempt + 1))
+        except Exception as e:
+            err = str(e)
+            if "429" in err or "rate" in err.lower() or "RESOURCE_EXHAUSTED" in err:
+                time.sleep(min(5 * (2 ** attempt), 60))
+            elif attempt < 4:
+                time.sleep(2 * (attempt + 1))
+            else:
+                return None
+    return None
+
+
+def _annotation_to_text(extraction):
+    """Convert extraction dict to embeddable text."""
+    parts = []
+    domains = extraction.get("domains")
+    if domains:
+        if isinstance(domains, list):
+            domains = ", ".join(str(d) for d in domains)
+        parts.append(f"domains: {domains}")
+    for field in ("tension", "register", "energy", "compression", "switching", "action"):
+        val = extraction.get(field)
+        if val and str(val).lower() not in ("null", "none", ""):
+            parts.append(f"{field}: {val}")
+    return "\n".join(parts) if parts else ""
+
+
+def annotate_all(traces, output_dir):
+    """Annotate all traces with cognitive extraction. Returns list of annotation dicts."""
+    import litellm
+    litellm.suppress_debug_info = True
+
+    checkpoint = Path(output_dir) / "_annotations.jsonl"
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    annotations = [None] * len(traces)
+
+    done_indices = set()
+    if checkpoint.exists():
+        with open(checkpoint) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                idx = obj["index"]
+                if idx < len(annotations):
+                    annotations[idx] = obj["extraction"]
+                    done_indices.add(idx)
+        print(f"  Resuming: {len(done_indices)} already annotated")
+
+    remaining = [(i, traces[i]) for i in range(len(traces)) if i not in done_indices]
+    if not remaining:
+        print(f"  All {len(traces)} traces already annotated")
+        return annotations
+
+    print(f"  Annotating {len(remaining)} traces ({ANNOTATE_MODEL})...")
+    print(f"  Workers: {ANNOTATE_MAX_WORKERS} · Ctrl+C to stop and resume later")
+
+    t0 = time.time()
+    done_count = 0
+    errors = 0
+    lock = Lock()
+
+    def process(item):
+        nonlocal done_count, errors
+        idx, trace = item
+        extraction = _annotate_one(trace)
+        with lock:
+            if extraction:
+                annotations[idx] = extraction
+                with open(checkpoint, "a") as f:
+                    f.write(json.dumps({"index": idx, "extraction": extraction},
+                                       ensure_ascii=False) + "\n")
+                done_count += 1
+            else:
+                errors += 1
+            total = done_count + errors
+            if total % 100 == 0 and total > 0:
+                elapsed = time.time() - t0
+                rate = done_count / elapsed if elapsed > 0 else 0
+                eta = (len(remaining) - total) / rate if rate > 0 else 0
+                print(f"    [{done_count + len(done_indices)}/{len(traces)}] "
+                      f"{rate:.1f}/s · ~{eta/60:.0f}m left · {errors} err")
+
+    with ThreadPoolExecutor(max_workers=ANNOTATE_MAX_WORKERS) as executor:
+        futures = []
+        for item in remaining:
+            if _shutdown.is_set():
+                break
+            futures.append(executor.submit(process, item))
+        for f in futures:
+            if _shutdown.is_set():
+                break
+            f.result()
+
+    elapsed = time.time() - t0
+    print(f"  {done_count} annotated in {elapsed/60:.1f}m "
+          f"({done_count/max(elapsed,1):.1f}/s), {errors} errors")
+
+    for i in range(len(annotations)):
+        if annotations[i] is None:
+            annotations[i] = {}
+
+    if done_count + len(done_indices) >= len(traces) and checkpoint.exists():
+        checkpoint.unlink()
+
+    return annotations
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # EMBEDDING
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -260,8 +466,8 @@ def _embed_batch(client, texts):
             raise
 
 
-def embed_all(traces, output_dir):
-    texts = [t["text"][:EMBED_TRUNCATE] for t in traces]
+def embed_all(traces, output_dir, texts_override=None):
+    texts = texts_override if texts_override else [t["text"][:EMBED_TRUNCATE] for t in traces]
     n = len(texts)
     checkpoint = Path(output_dir) / "_embed_checkpoint.npz"
 
@@ -389,60 +595,74 @@ def cluster(embeddings, min_cluster_size=None):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 PORTRAIT_PROMPT = """\
-You are writing a cognitive atlas — a map of one person's mind, built from their behavioral traces.
+You are writing a cognitive atlas. You receive data about a cluster of behavioral \
+traces — things a single mind produced or consumed. Your job is to write a portrait \
+of this cluster: who inhabits this region of cognitive space?
 
-You receive data about a cluster of traces (things a mind produced or consumed). Write a portrait of this cognitive region.
+Write in second person ("you"). Be precise, specific, and vivid. No generic platitudes. \
+Name the exact tensions, obsessions, registers, and energies you observe. \
+If the cluster has a contradiction, name it. If it has a signature move, name it.
 
 Structure your response as valid JSON:
 {
   "name": "2-5 word evocative name (not generic like 'Technical Discussion')",
-  "portrait": "2-3 paragraphs describing who inhabits this region and what they do",
+  "portrait": "3-5 paragraphs describing who lives here and what they do",
   "signature": "One sentence capturing this region's essence",
   "verbs": ["3-5 action verbs that define this region"],
-  "borders": "1-2 sentences: what this region is NOT"
+  "borders": "1-2 sentences: what this region is NOT (negative space)"
 }
 
-Write in second person ("you"). Be precise — name specific tensions, patterns, and obsessions.
-If traces show code-switching or non-English text, reflect that in the portrait.
+Write in a mix of English and the trace language if the traces show code-switching. \
+Match the register of the data — if the traces are raw and vulgar, your portrait \
+should have that texture. If they are dense and technical, match that.
+
 Respond with valid JSON only.\
 """
 
 
-def _analyze_cluster(traces, labels, cluster_id):
+def _analyze_cluster(traces, labels, cluster_id, annotations=None):
     mask = [i for i, l in enumerate(labels) if l == cluster_id]
-    ct = [traces[i] for i in mask]
-    sources = Counter(t["source"] for t in ct)
+    ct = [(i, traces[i]) for i in mask]
+    sources = Counter(t["source"] for _, t in ct)
     source_pcts = {s: f"{c/len(ct)*100:.0f}%" for s, c in sources.most_common(5)}
 
     rng = np.random.RandomState(42 + cluster_id)
     by_source = defaultdict(list)
-    for t in ct:
-        by_source[t["source"]].append(t)
+    for idx, t in ct:
+        by_source[t["source"]].append((idx, t))
 
     sampled = []
     remaining = SAMPLES_PER_CLUSTER
     for src in sorted(by_source.keys()):
-        src_traces = by_source[src]
-        n_take = max(1, int(len(src_traces) / len(ct) * SAMPLES_PER_CLUSTER))
-        n_take = min(n_take, remaining, len(src_traces))
-        indices = rng.choice(len(src_traces), size=n_take, replace=False)
-        for idx in indices:
-            sampled.append(src_traces[idx])
+        src_items = by_source[src]
+        n_take = max(1, int(len(src_items) / len(ct) * SAMPLES_PER_CLUSTER))
+        n_take = min(n_take, remaining, len(src_items))
+        indices = rng.choice(len(src_items), size=n_take, replace=False)
+        for i in indices:
+            sampled.append(src_items[i])
         remaining -= n_take
         if remaining <= 0:
             break
     if remaining > 0:
-        pool = [t for t in ct if t not in sampled]
+        sampled_set = {idx for idx, _ in sampled}
+        pool = [(idx, t) for idx, t in ct if idx not in sampled_set]
         if pool:
             extra = rng.choice(len(pool), size=min(remaining, len(pool)), replace=False)
-            for idx in extra:
-                sampled.append(pool[idx])
+            for i in extra:
+                sampled.append(pool[i])
+
+    sample_data = []
+    for idx, t in sampled:
+        item = dict(t)
+        if annotations and idx < len(annotations) and annotations[idx]:
+            item["_annotation"] = annotations[idx]
+        sample_data.append(item)
 
     return {"cluster_id": cluster_id, "size": len(ct),
-            "sources": source_pcts, "samples": sampled}
+            "sources": source_pcts, "samples": sample_data}
 
 
-def write_portraits(traces, labels, n_clusters):
+def write_portraits(traces, labels, n_clusters, annotations=None):
     import litellm
     litellm.suppress_debug_info = True
 
@@ -450,16 +670,32 @@ def write_portraits(traces, labels, n_clusters):
     for cid in range(n_clusters):
         if _shutdown.is_set():
             break
-        analysis = _analyze_cluster(traces, labels, cid)
+        analysis = _analyze_cluster(traces, labels, cid, annotations=annotations)
         print(f"  [{cid+1}/{n_clusters}] {analysis['size']} traces...", end=" ", flush=True)
 
         parts = [f"Cluster {cid} — {analysis['size']} traces"]
         parts.append(f"Source distribution: {json.dumps(analysis['sources'])}")
         parts.append("\nSample traces:\n")
         for t in analysis["samples"]:
+            parts.append(f"---")
             parts.append(f"[{t['source']}] {t.get('created_at', '')}")
-            parts.append(t["text"][:300])
-            parts.append("---")
+            ann = t.get("_annotation")
+            if ann:
+                if ann.get("action"):
+                    parts.append(f"action: {ann['action']}")
+                if ann.get("domains"):
+                    d = ann["domains"]
+                    parts.append(f"domains: {', '.join(d) if isinstance(d, list) else d}")
+                if ann.get("tension"):
+                    parts.append(f"tension: {ann['tension']}")
+                if ann.get("register"):
+                    parts.append(f"register: {ann['register']}")
+                if ann.get("energy"):
+                    parts.append(f"energy: {ann['energy']}")
+                sw = ann.get("switching")
+                if sw and str(sw).lower() not in ("null", "none"):
+                    parts.append(f"switching: {sw}")
+            parts.append(f"text: {t['text'][:300]}")
 
         user_prompt = "\n".join(parts)
         portrait_data = {"name": f"Region {cid}", "portrait": "", "signature": "",
@@ -769,6 +1005,8 @@ def main():
     parser.add_argument("--classify", help="Classify text against an atlas")
     parser.add_argument("--atlas", default="atlas.json", help="Path to atlas.json")
     parser.add_argument("--output", default=".", help="Output directory")
+    parser.add_argument("--deep", action="store_true",
+                        help="Annotate traces via LLM before embedding (higher fidelity)")
     parser.add_argument("--min-cluster-size", type=int, help="Override HDBSCAN")
     parser.add_argument("--no-portraits", action="store_true", help="Skip portraits")
     parser.add_argument("--no-viz", action="store_true", help="Skip HTML map")
@@ -790,15 +1028,21 @@ def main():
         parser.print_help()
         return
 
-    print(f"atlas.py v{VERSION} — Cognitive Atlas Builder")
+    deep = args.deep
+    n_steps = 6 if deep else 5
+    step = 0
+
+    mode_label = "DEEP" if deep else "RAW"
+    print(f"atlas.py v{VERSION} — Cognitive Atlas Builder ({mode_label})")
     print("=" * 55)
     t_start = time.time()
 
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
 
-    # [1/5] Load
-    print(f"\n[1/5] Loading traces...")
+    # Load
+    step += 1
+    print(f"\n[{step}/{n_steps}] Loading traces...")
     traces, fmt = auto_load(args.traces)
     src_counts = Counter(t["source"] for t in traces)
     print(f"  {fmt} format: {len(traces):,} traces")
@@ -820,20 +1064,43 @@ def main():
         print(f"  Deduplicated: {len(traces)} → {len(unique)}")
         traces = unique
 
-    # [2/5] Embed
-    print(f"\n[2/5] Embedding {len(traces):,} traces (gemini-embedding-001)...")
-    embeddings = embed_all(traces, out)
+    # Annotate (deep mode only)
+    embed_texts = None
+    annotations = None
+    if deep:
+        step += 1
+        print(f"\n[{step}/{n_steps}] Annotating traces ({ANNOTATE_MODEL})...")
+        annotations = annotate_all(traces, out)
+        embed_texts = []
+        fallback_count = 0
+        for i, ann in enumerate(annotations):
+            ann_text = _annotation_to_text(ann)
+            if ann_text:
+                embed_texts.append(ann_text[:EMBED_TRUNCATE])
+            else:
+                embed_texts.append(traces[i]["text"][:EMBED_TRUNCATE])
+                fallback_count += 1
+        if fallback_count:
+            print(f"  {fallback_count} traces fell back to raw text")
 
-    # [3/5] Cluster
-    print(f"\n[3/5] Clustering (UMAP + HDBSCAN)...")
+    # Embed
+    step += 1
+    embed_label = "annotations" if deep else "traces"
+    print(f"\n[{step}/{n_steps}] Embedding {len(traces):,} {embed_label} ({EMBED_MODEL})...")
+    embeddings = embed_all(traces, out, texts_override=embed_texts)
+
+    # Cluster
+    step += 1
+    print(f"\n[{step}/{n_steps}] Clustering (UMAP + HDBSCAN)...")
     labels, coords_2d, n_clusters, cluster_params = cluster(
         embeddings, min_cluster_size=args.min_cluster_size
     )
     centroids_normed = compute_centroids(embeddings, labels, n_clusters)
 
-    # [4/5] Portraits
+    # Portraits
+    step += 1
     if args.no_portraits:
-        print(f"\n[4/5] Skipping portraits (--no-portraits)")
+        print(f"\n[{step}/{n_steps}] Skipping portraits (--no-portraits)")
         portraits = []
         for cid in range(n_clusters):
             mask = labels == cid
@@ -847,12 +1114,14 @@ def main():
                 "sources": source_pcts,
             })
     else:
-        print(f"\n[4/5] Writing {n_clusters} portraits ({PORTRAIT_MODEL})...")
-        portraits = write_portraits(traces, labels, n_clusters)
+        print(f"\n[{step}/{n_steps}] Writing {n_clusters} portraits ({PORTRAIT_MODEL})...")
+        portraits = write_portraits(traces, labels, n_clusters, annotations=annotations)
 
-    # [5/5] Save
-    print(f"\n[5/5] Saving outputs...")
+    # Save
+    step += 1
+    print(f"\n[{step}/{n_steps}] Saving outputs...")
     calibration = compute_calibration(embeddings, labels, centroids_normed)
+    extraction_mode = "derived" if deep else "raw"
     metadata = {
         "n_traces": len(traces),
         "n_regions": n_clusters,
@@ -861,7 +1130,8 @@ def main():
         "embedding_dim": EMBED_DIM,
         "clustering_params": cluster_params,
         "portrait_model": PORTRAIT_MODEL if not args.no_portraits else None,
-        "extraction_mode": "raw",
+        "annotate_model": ANNOTATE_MODEL if deep else None,
+        "extraction_mode": extraction_mode,
     }
     save_atlas_json(portraits, centroids_normed, calibration, metadata, out)
     save_atlas_md(portraits, len(traces), out)

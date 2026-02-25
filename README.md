@@ -67,6 +67,9 @@ python atlas.py --traces data.jsonl --no-portraits
 
 # Custom output directory
 python atlas.py --traces data.jsonl --output ./my-atlas
+
+# Deep mode: annotate each trace via LLM before embedding (higher fidelity)
+python atlas.py --traces data.jsonl --deep
 ```
 
 ### Classify text against an atlas
@@ -92,6 +95,7 @@ Each line is one behavioral trace — a thing you wrote, said, liked, or produce
 
 ```
 --traces PATH        Input: Twitter archive directory or JSONL file
+--deep               Annotate traces via LLM before embedding (higher fidelity)
 --classify TEXT      Classify text against an existing atlas
 --atlas PATH         Path to atlas.json (default: atlas.json)
 --output DIR         Output directory (default: .)
@@ -101,6 +105,12 @@ Each line is one behavioral trace — a thing you wrote, said, liked, or produce
 --seed N             Random seed (default: 42)
 --version            Show version
 ```
+
+### Raw vs Deep mode
+
+**Raw mode** (default): Embeds trace text directly. Fast, free, good enough for most use cases. Clusters by surface content and style.
+
+**Deep mode** (`--deep`): Each trace is first decomposed by an LLM into cognitive elements (domains, tension, register, energy, compression, action), then those annotations are embedded. Clusters by cognitive signature rather than surface content. Higher fidelity, but slower (one LLM call per trace). Supports checkpoint/resume — Ctrl+C to stop, run again to continue.
 
 ## The atlas.json format
 
