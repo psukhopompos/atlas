@@ -1,0 +1,7 @@
+google-genai>=1.0
+numpy
+hdbscan>=0.8.40
+umap-learn>=0.5
+plotly
+scipy
+python-dotenv

@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.pyc
+*.npz
+_embed_checkpoint.npz
+.DS_Store
