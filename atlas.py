@@ -48,8 +48,8 @@ from google import genai
 # ─── Config ──────────────────────────────────────────────────────────────────
 
 VERSION = "0.1.0"
-EMBED_MODEL = "gemini-embedding-001"
-PORTRAIT_MODEL = "gemini-2.5-flash"
+EMBED_MODEL = os.environ.get("ATLAS_EMBED_MODEL", "gemini-embedding-001")
+PORTRAIT_MODEL = os.environ.get("ATLAS_PORTRAIT_MODEL", "gemini-3-flash-preview")
 EMBED_BATCH_SIZE = 100
 EMBED_MAX_WORKERS = 5
 EMBED_DIM = 3072

@@ -39,6 +39,10 @@ export GOOGLE_API_KEY=your_key
 Or create a `.env` file:
 ```
 GOOGLE_API_KEY=your_key
+
+# Optional: override models
+ATLAS_PORTRAIT_MODEL=gemini-3-flash-preview   # default
+ATLAS_EMBED_MODEL=gemini-embedding-001         # default
 ```
 
 ## Usage
