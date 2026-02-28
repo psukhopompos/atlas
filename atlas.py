@@ -687,6 +687,10 @@ def write_portraits(traces, labels, n_clusters, annotations=None):
             parts.append(f"[{t['source']}] {t.get('created_at', '')}")
             ann = t.get("_annotation")
             if ann:
+                if isinstance(ann, list):
+                    ann = ann[0] if ann else {}
+                if not isinstance(ann, dict):
+                    ann = {}
                 if ann.get("action"):
                     parts.append(f"action: {ann['action']}")
                 if ann.get("domains"):
