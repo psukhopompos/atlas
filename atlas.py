@@ -346,6 +346,12 @@ def _annotate_one(trace):
 
 def _annotation_to_text(extraction):
     """Convert extraction dict to embeddable text."""
+    if extraction is None:
+        return ""
+    if isinstance(extraction, list):
+        extraction = extraction[0] if extraction else {}
+    if not isinstance(extraction, dict):
+        return ""
     parts = []
     domains = extraction.get("domains")
     if domains:
