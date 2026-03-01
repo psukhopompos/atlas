@@ -1,11 +1,11 @@
-# atlas.py
+# form.py
 
 Build a cognitive atlas from your behavioral traces. **$0. Under 30 minutes.**
 
 Your Twitter archive goes in. A map of your mind comes out — 10-30 named cognitive regions, each with a portrait of how you think in that territory.
 
 ```
-python atlas.py --traces ~/Downloads/twitter-archive/
+python form.py --traces ~/Downloads/twitter-archive/
 ```
 
 ## What it does
@@ -16,13 +16,13 @@ Input (Twitter archive or JSONL)
   → Project to 2D (UMAP, local)
   → Cluster (HDBSCAN, auto-tuned, local)
   → Portrait each region (any LLM via litellm — default: Gemini Flash, free)
-  → Output: atlas.json + atlas.md + atlas.html
+  → Output: form.json + form.md + form.html
 ```
 
 Three outputs:
-- **atlas.json** — portable atlas with embeddings, centroids, calibration data. This is the format.
-- **atlas.md** — human-readable portraits of each cognitive region
-- **atlas.html** — interactive 2D map (Plotly)
+- **form.json** — portable cognitive atlas with embeddings, centroids, calibration data. This is the format.
+- **form.md** — human-readable portraits of each cognitive region
+- **form.html** — interactive 2D map (Plotly)
 
 ## Install
 
@@ -41,41 +41,41 @@ Or create a `.env` file:
 GOOGLE_API_KEY=your_key
 
 # Optional: override portrait model (any litellm-supported model)
-ATLAS_PORTRAIT_MODEL=gemini/gemini-3-flash-preview   # default
+FORM_PORTRAIT_MODEL=gemini/gemini-3-flash-preview   # default
 # Examples:
-# ATLAS_PORTRAIT_MODEL=anthropic/claude-sonnet-4-20250514
-# ATLAS_PORTRAIT_MODEL=openai/gpt-4o
-# ATLAS_PORTRAIT_MODEL=ollama/llama3
+# FORM_PORTRAIT_MODEL=anthropic/claude-sonnet-4-20250514
+# FORM_PORTRAIT_MODEL=openai/gpt-4o
+# FORM_PORTRAIT_MODEL=ollama/llama3
 
 # Embedding model (Gemini only — canonical vector space for the format)
-ATLAS_EMBED_MODEL=gemini-embedding-001
+FORM_EMBED_MODEL=gemini-embedding-001
 ```
 
 ## Usage
 
-### Build an atlas
+### Build a cognitive atlas
 
 ```bash
 # From a Twitter/X archive (download yours at x.com/settings → Your Account → Download)
-python atlas.py --traces ~/Downloads/twitter-archive/
+python form.py --traces ~/Downloads/twitter-archive/
 
 # From any JSONL file
-python atlas.py --traces my_data.jsonl
+python form.py --traces my_data.jsonl
 
 # Skip portraits (faster, just clusters)
-python atlas.py --traces data.jsonl --no-portraits
+python form.py --traces data.jsonl --no-portraits
 
 # Custom output directory
-python atlas.py --traces data.jsonl --output ./my-atlas
+python form.py --traces data.jsonl --output ./my-atlas
 
 # Deep mode: annotate each trace via LLM before embedding (higher fidelity)
-python atlas.py --traces data.jsonl --deep
+python form.py --traces data.jsonl --deep
 ```
 
-### Classify text against an atlas
+### Classify text against a cognitive atlas
 
 ```bash
-python atlas.py --classify "some text" --atlas atlas.json
+python form.py --classify "some text" --form form.json
 ```
 
 Returns the top 3 matching regions, border detection (text that sits between two regions), and novelty score (how alien the text is to your atlas).
@@ -89,15 +89,15 @@ If you're not using a Twitter archive, provide a JSONL file:
 {"text": "another trace", "source": "conversation"}
 ```
 
-Each line is one behavioral trace — a thing you wrote, said, liked, or produced. The more traces, the higher resolution the atlas.
+Each line is one behavioral trace — a thing you wrote, said, liked, or produced. The more traces, the higher resolution the cognitive atlas.
 
 ## Options
 
 ```
 --traces PATH        Input: Twitter archive directory or JSONL file
 --deep               Annotate traces via LLM before embedding (higher fidelity)
---classify TEXT      Classify text against an existing atlas
---atlas PATH         Path to atlas.json (default: atlas.json)
+--classify TEXT      Classify text against an existing cognitive atlas
+--form PATH          Path to form.json (default: form.json)
 --output DIR         Output directory (default: .)
 --min-cluster-size N Override auto-tuned HDBSCAN parameter
 --no-portraits       Skip Flash portraits (unnamed regions)
@@ -112,9 +112,9 @@ Each line is one behavioral trace — a thing you wrote, said, liked, or produce
 
 **Deep mode** (`--deep`): Each trace is first decomposed by an LLM into cognitive elements (domains, tension, register, energy, compression, action), then those annotations are embedded. Clusters by cognitive signature rather than surface content. Higher fidelity, but slower (one LLM call per trace). Supports checkpoint/resume — Ctrl+C to stop, run again to continue.
 
-## The atlas.json format
+## The form.json format
 
-One file is the atlas. The format:
+One file is the cognitive atlas. The format:
 
 ```json
 {
@@ -153,7 +153,7 @@ One file is the atlas. The format:
 }
 ```
 
-`extraction_mode: "raw"` means traces were embedded as raw text. Centroids are base64-encoded float32, shape `(n_regions, 3072)`. A 20-region atlas is ~250KB.
+`extraction_mode: "raw"` means traces were embedded as raw text. Centroids are base64-encoded float32, shape `(n_regions, 3072)`. A 20-region cognitive atlas is ~250KB.
 
 ## How it works
 
@@ -165,7 +165,7 @@ One file is the atlas. The format:
 
 4. **Portrait** — Gemini Flash writes a portrait of each region from 25 sample traces: a name, 2-3 paragraph description, signature sentence, defining verbs, and borders (what the region is NOT).
 
-5. **Output** — Everything saved to atlas.json (portable), atlas.md (readable), and atlas.html (visual).
+5. **Output** — Everything saved to form.json (portable), form.md (readable), and form.html (visual).
 
 ## What you need
 
